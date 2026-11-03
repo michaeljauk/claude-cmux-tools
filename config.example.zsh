@@ -32,17 +32,35 @@ CCT_SHARE_MCP=false
 # Path of the real claude binary. Default: ~/.local/bin/claude (native installer).
 # CCT_CLAUDE_BIN=$HOME/.local/bin/claude
 
+# --- claude-handover -------------------------------------------------------------------------
+
+# Command that --prefill puts on the tab's shell line. Default: claude. Use your alias if you have
+# one, for example c.
+# CCT_CLAUDE_CMD=claude
+
 # --- Raycast "Claude from Context" ---------------------------------------------------------
 
-# Where a Linear issue or GitHub PR opens. Format: "<kind>:<match>|<cwd>|<workspace title>"
-#   linear:<org>         https://linear.app/<org>/issue/KEY-123/...
+# Where a Linear issue or GitHub PR opens.
+# Format: "<kind>:<match>|<cwd>|<workspace title>|<github owner/repo>"
+#   linear:<org>         https://linear.app/<org>/issue/KEY-123/... (and /review/... links)
 #   github:<owner/repo>  https://github.com/<owner/repo>/pull/123
-# The workspace title is compared without leading emoji and spaces, so "Acme" matches the
-# workspace "🚀 Acme". Leave it empty to use the focused workspace.
+# The 4th field (Linear only) lets an issue find its PR through gh. The workspace title is compared
+# without leading emoji and spaces, so "Acme" matches the workspace "🚀 Acme". Leave it empty to
+# use the focused workspace.
 CCT_CONTEXTS=(
-  "linear:acme|$HOME/acme/monorepo|Acme"
+  "linear:acme|$HOME/acme/monorepo|Acme|acme-inc/monorepo"
   "github:acme-inc/monorepo|$HOME/acme/monorepo|Acme"
 )
 
-# Folder for everything that matches no context (other repos, plain links).
+# Everything without a URL (a screenshot of Outlook, Teams, Excel, ...) starts here.
+CCT_NO_URL_CWD=$HOME/notes
+# Workspace for those tabs; empty = the focused workspace.
+CCT_NO_URL_WORKSPACE="Notes"
+# Window-title globs that pick another workspace, first match wins. Format: "<glob>|<workspace>"
+# Outlook's title holds the selected mailbox, e.g. "Inbox • you@acme.com".
+CCT_NO_URL_ROUTES=(
+  "*@acme.com*|Notes / Acme"
+)
+
+# Folder when nothing else gives one (no context, no usable cmux folder).
 CCT_DEFAULT_CWD=$HOME

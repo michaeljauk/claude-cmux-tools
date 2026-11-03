@@ -6,8 +6,8 @@ Three small zsh scripts for people who run [Claude Code](https://code.claude.com
 | Script | What it does |
 |---|---|
 | `bin/claude-router` | Picks a Claude Code account (`CLAUDE_CONFIG_DIR`) from the cmux workspace, the folder or the git remote, then runs `claude`. Work repos use the work account, everything else uses the personal one. |
-| `bin/claude-handover` | Opens a new cmux tab and starts Claude Code there with a prompt from a file. It can send the prompt or only pre-fill it. |
-| `raycast/claude-from-context.sh` | A Raycast hotkey. It reads the Linear issue, the GitHub PR or the URL in front of you, and opens a cmux tab with Claude and that reference pre-filled. If a tab for that issue or PR already exists, it focuses that tab. |
+| `bin/claude-handover` | Opens a new cmux tab and starts Claude Code there with a prompt from a file. It can send the prompt at once, or put it on the tab's shell line for you to finish. |
+| `raycast/claude-from-context.sh` | A Raycast hotkey. It takes the Linear issue, GitHub PR, web page or window in front of you and opens a cmux tab with `claude "Context: … - "` on the shell line. You type your instructions and press Enter. If a tab for that issue or PR already exists, it focuses that tab instead. |
 
 They are personal tooling, shared as is. Expect to read and adapt them.
 
@@ -17,6 +17,7 @@ They are personal tooling, shared as is. Expect to read and adapt them.
 - cmux (tested with 0.64 and 0.65)
 - Claude Code with the native installer (`~/.local/bin/claude`), tested with 2.1.317
 - Raycast, for the hotkey only
+- Optional: [`gh`](https://cli.github.com), logged in. Without it, issues and PRs are not linked.
 
 ## Install
 
@@ -49,9 +50,17 @@ The router only picks an account. It does not switch accounts when one hits a us
 ### claude-handover
 
 ```sh
-claude-handover prompt.md --cwd ~/acme/monorepo --title "ACME-42"   # sends the prompt
-claude-handover prompt.md --prefill                                  # fills the input box only
+claude-handover prompt.md --cwd ~/acme/monorepo --title "ACME-42"   # sends the prompt at once
+claude-handover prompt.md --prefill                                  # puts it on the shell line
 ```
+
+With `--prefill` the new tab shows `claude "<prompt>▌"`, with the cursor before the closing quote.
+Type your text and press Enter. A one-shot zsh widget takes the line raw, before the shell parses
+it, so `"`, `'`, `$`, `!` and backticks in your text arrive as typed. If you rewrite the line into
+another command, it runs as usual. Ctrl+C cancels. Set `CCT_CLAUDE_CMD` to use an alias such as `c`.
+
+cmux cannot set a shell's input line from outside, so the script types one `source <launcher>`
+line into the new tab. The launcher clears the screen, sets up the widget and deletes itself.
 
 Inside cmux, the tab opens next to the calling tab. Outside cmux it opens in the focused
 workspace, and that needs password mode (next section).
@@ -77,46 +86,66 @@ workspace, and that needs password mode (next section).
    `raycast/` folder of this repo.
 3. Give **Claude from Context** a hotkey. Pick one that no app uses: ⌥⌘C, for example, opens
    the Chrome DevTools. The author uses ⌃⌥⌘C.
-4. Add your Linear org and GitHub repos to `CCT_CONTEXTS`, so issues and PRs open in the right
-   folder and workspace.
-5. On first use, allow Raycast to control your computer (Accessibility). The Linear part sends a
-   keystroke.
+4. Fill in `CCT_CONTEXTS` and the `CCT_NO_URL_*` settings in the config.
+5. On first use, macOS asks twice. Allow both:
+   - **Accessibility** for Raycast: the Linear step sends a keystroke.
+   - **Screen Recording** for Raycast: apps without a URL get a screenshot.
 
-How it finds the reference:
+#### What it reads
 
 | App in front | Source |
 |---|---|
-| Linear desktop | sends ⌘⇧, (Copy issue URL), reads the clipboard, puts the old text back |
-| Chrome, Safari | URL of the active tab |
+| Linear desktop | sends ⌘⇧, (Copy issue URL), reads the clipboard, puts the old text back; the window title |
+| Chrome, Safari | URL and title of the active tab |
 | any other app | the clipboard, if it holds an http(s) URL |
+| no URL anywhere (Outlook, Teams, Excel, …) | a screenshot of the front window, saved with mode 600 |
 
-How it picks the tab:
+#### What it puts on the line
 
-- If a cmux tab title names the issue key (`ACME-42`) or the PR number (`PR #123`, `#123`), the
+| Reference | Tab title | Context |
+|---|---|---|
+| Linear issue or review link | `ACME-42 · PR #123` | `Linear issue ACME-42 = GitHub PR #123 in acme-inc/monorepo (branch …): <url>` |
+| GitHub PR | `ACME-42 · PR #123` | `GitHub PR #123 = Linear ACME-42 in acme-inc/monorepo (branch …): <url>` |
+| other web page | page title, else `host · last segment` | `<page title>: <url>` |
+| screenshot | `📷 <window title>` | `Screenshot of <app> (<window title>): <png path>` |
+
+An issue finds its PR through `gh` by the key at the start of the PR title. A PR finds its key in
+its title or branch name. The 4th field of a `linear:` context names the repo to search.
+
+#### Which tab, folder and workspace
+
+- If a cmux tab title names the issue key or the PR number (`ACME-42`, `PR #123`, `#123`), the
   hotkey focuses that tab. A tab in the target workspace comes first.
-- If no tab matches, it opens a new tab in the folder and workspace from `CCT_CONTEXTS`. Without
-  a matching context, it uses `CCT_DEFAULT_CWD` and the focused workspace.
-- The new tab shows `Context: <issue, PR or URL>` in Claude's input box. Type your instructions
-  after it and press Enter.
+- A matching `CCT_CONTEXTS` entry sets the folder and the workspace.
+- A screenshot starts in `CCT_NO_URL_CWD`. `CCT_NO_URL_ROUTES` picks the workspace by window title.
+  Outlook's title holds the selected mailbox, so mails of one domain can go to their own workspace.
+- Everything else opens in the focused workspace, in the folder of that workspace's selected tab.
+  The router then picks the account for that place.
 
 Test without opening anything:
 
 ```sh
 CCT_DRY_RUN=1 CCT_URL=https://linear.app/acme/issue/ACME-42/x raycast/claude-from-context.sh
+CCT_DRY_RUN=1 CCT_SHOT=/tmp/x.png CCT_SHOT_APP=Outlook CCT_SHOT_TITLE="Inbox • you@acme.com" \
+  raycast/claude-from-context.sh
 ```
 
 ## Limits
 
-- **`--prefill` is undocumented.** It is the flag that Claude Code's own `claude-cli://` deep
-  links use. An update can change or remove it. If tabs open with an "unknown option" error,
-  drop `--prefill` from the Raycast script.
+- **Screenshots show the whole window.** Claude sees everything in it once you press Enter.
+  Do not send windows with data that must not leave your machine. Old screenshots stay in
+  `~/.local/state/claude-cmux-tools` until you delete them.
+- **The new Outlook for Mac** exposes no mail selection over AppleScript, so mails come in as
+  screenshots, not as references.
 - **Matching uses tab titles only.** A session that you started by hand matches only if its
-  title contains the key.
+  title contains the key or PR number.
 - **Clipboard:** after the Linear step, only text comes back. An image or a file on the clipboard
   is lost.
 - **One cmux window:** the workspace lookup searches the current window only. More than one
   window is not tested.
-- **Linear views and projects:** ⌘⇧, copies nothing there, so the hotkey reports "no URL found".
+- **Linear views and projects:** ⌘⇧, copies nothing there. The window then gets a screenshot.
+- **The shell line is one zsh line.** For a line break in your text, use the usual zsh means
+  (Alt+Enter or `\` + Enter, depending on your setup).
 
 ## License
 
