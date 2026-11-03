@@ -1,0 +1,114 @@
+#!/bin/zsh
+# claude-handover: start a fresh Claude Code session in a new cmux tab, with a prompt from a file.
+#
+# Usage: claude-handover <prompt-file> [--cwd <dir>] [--title <tab title>]
+#                        [--workspace <id>] [--no-focus] [--prefill]
+#
+# Defaults: cwd = $PWD. Inside cmux the tab opens next to the calling tab. Outside cmux (Raycast,
+# launchd, another terminal) it opens in the focused pane of the focused workspace; that needs the
+# cmux socket in password mode, see README. The tab takes focus unless you pass --no-focus.
+# --title pins the tab name, so Claude's own live title does not replace it.
+# --prefill puts the prompt into Claude's input box and does not send it. It uses the hidden
+# `claude --prefill` flag (the one claude-cli:// deep links use, seen in Claude Code 2.1.317).
+# It is undocumented and can change.
+#
+# The tab runs `claude` from its interactive shell, so an alias claude=claude-router applies.
+#
+# cmux facts this relies on (checked with cmux 0.64-0.65):
+#   - new-surface has no --command. surface.create stores initial_command but spawns a plain
+#     login shell anyway, so the script types into that shell.
+#   - surface.create honors working_directory; "cwd" is ignored.
+#   - A tab spawns its terminal only once it is shown. send queues text for such a tab and
+#     delivers it at spawn, so a background tab starts Claude when you open it.
+#   - In the default socket mode (cmuxOnly) the socket refuses clients that are not cmux
+#     descendants. A disowned background waiter therefore cannot work; do not add one.
+# The prompt reaches claude only through a file read inside the launcher, never through a
+# typed command line, so quotes, $ and newlines survive.
+
+cli=${CMUX_BUNDLED_CLI_PATH:-/Applications/cmux.app/Contents/Resources/bin/cmux}
+dir=${CCT_STATE_DIR:-$HOME/.local/state/claude-cmux-tools}
+
+usage() {
+  print -u2 "usage: claude-handover <prompt-file> [--cwd <dir>] [--title <tab title>] [--workspace <id>] [--no-focus] [--prefill]"
+  exit 2
+}
+
+prompt_file= cwd=$PWD title= workspace=$CMUX_WORKSPACE_ID focus=true prefill=
+while (( $# )); do
+  case $1 in
+    --cwd) (( $# >= 2 )) || usage; cwd=$2; shift 2 ;;
+    --title) (( $# >= 2 )) || usage; title=$2; shift 2 ;;
+    --workspace) (( $# >= 2 )) || usage; workspace=$2; shift 2 ;;
+    --no-focus) focus=false; shift ;;
+    --prefill) prefill='--prefill '; shift ;;
+    -h|--help) usage ;;
+    -*) print -u2 "claude-handover: unknown option $1"; usage ;;
+    *) [[ -z $prompt_file ]] || usage; prompt_file=$1; shift ;;
+  esac
+done
+
+[[ -n $prompt_file ]] || usage
+[[ -x $cli ]] || { print -u2 "claude-handover: cmux CLI not found at $cli"; exit 3; }
+# Outside cmux (Raycast, launchd) the socket accepts us only in password mode
+# (automation.socketControlMode). Then target the focused workspace and pane.
+ident=$($cli --json --id-format uuids identify 2>/dev/null)
+if [[ -z $ident ]]; then
+  print -u2 "claude-handover: cmux socket refused the call (not inside cmux, and no password mode?). Copy the prompt instead."
+  exit 3
+fi
+[[ -n $workspace ]] || workspace=$(jq -r '.focused.workspace_id // empty' <<<$ident)
+[[ -n $workspace ]] || { print -u2 "claude-handover: no focused cmux workspace"; exit 3; }
+[[ -r $prompt_file && -s $prompt_file ]] || { print -u2 "claude-handover: prompt file missing or empty: $prompt_file"; exit 1; }
+[[ -d $cwd ]] || { print -u2 "claude-handover: no such directory: $cwd"; exit 1; }
+if [[ $(head -c 1 -- $prompt_file) == - ]]; then
+  print -u2 "claude-handover: prompt starts with '-', claude would read it as an option"
+  exit 1
+fi
+
+prompt_file=${prompt_file:A} cwd=${cwd:A}
+mkdir -p -m 700 $dir
+launcher=$dir/$(date +%Y%m%d-%H%M%S)-$$-launch.zsh
+
+# Sourced by the tab's interactive shell, so ~/.zshrc already defined the claude() router
+# function. Paths go in with (q) quoting; the prompt is read from the file at run time.
+cat > $launcher <<EOF
+rm -f -- ${(q)launcher}
+cd -- ${(q)cwd} || return
+claude ${prefill}"\$(<${(q)prompt_file})"
+EOF
+chmod 600 $launcher
+
+params=$(jq -nc --arg ws $workspace --arg cwd $cwd --argjson focus $focus \
+  '{workspace_id: $ws, type: "terminal", focus: $focus, working_directory: $cwd}')
+# Open next to the caller's tab. Outside cmux, use the focused pane of the focused workspace.
+# Any other workspace gets its own focused pane from cmux.
+pane=
+if [[ -n $CMUX_WORKSPACE_ID && $workspace == $CMUX_WORKSPACE_ID ]]; then
+  pane=$(jq -r '.caller.pane_id // empty' <<<$ident)
+elif [[ $workspace == $(jq -r '.focused.workspace_id // empty' <<<$ident) ]]; then
+  pane=$(jq -r '.focused.pane_id // empty' <<<$ident)
+fi
+[[ -n $pane ]] && params=$(jq -c --arg p $pane '. + {pane_id: $p}' <<<$params)
+
+if ! out=$($cli rpc surface.create $params 2>&1); then
+  rm -f -- $launcher
+  print -u2 "claude-handover: surface.create failed: $out"
+  exit 1
+fi
+surface=$(jq -r '.surface_id // empty' <<<$out)
+ref=$(jq -r '.surface_ref // empty' <<<$out)
+[[ -n $surface ]] || { rm -f -- $launcher; print -u2 "claude-handover: no surface_id in: $out"; exit 1; }
+
+[[ -n $title ]] && $cli rename-tab --workspace $workspace --surface $surface $title >/dev/null
+
+# send queues the text when the tab has no terminal yet and delivers it at spawn. The leading
+# space keeps the line out of history when HIST_IGNORE_SPACE is set.
+if ! $cli send --workspace $workspace --surface $surface " source ${(q)launcher}" >/dev/null \
+  || ! $cli send-key --workspace $workspace --surface $surface enter >/dev/null; then
+  print -u2 "claude-handover: could not type into $ref; run there: source $launcher"
+  exit 1
+fi
+
+print "OK $ref $surface cwd=$cwd prompt=$prompt_file"
+[[ $focus == false ]] && print "Tab opened in the background; Claude starts when you open it."
+exit 0

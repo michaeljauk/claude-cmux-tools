@@ -1,0 +1,96 @@
+#!/bin/zsh
+# claude-router: pick a Claude Code account (CLAUDE_CONFIG_DIR) from where you are, then run claude.
+#
+# Usage: claude-router [claude args...]
+#   Use it instead of `claude`: alias claude=claude-router, and in cmux set
+#   automation.claudeBinaryPath to this file.
+#
+# Rules, first match wins:
+#   1. CLAUDE_ACCOUNT=<name> in the environment
+#   2. CCT_ROUTES in the config, in order (cmux workspace title, path, git remote)
+#   3. CCT_DEFAULT_ACCOUNT
+#
+# Config: ${CCT_CONFIG:-~/.config/claude-cmux-tools/config.zsh}, see config.example.zsh.
+# CCT_DRY_RUN=1 prints the picked account and config dir and does not start claude.
+
+config=${CCT_CONFIG:-$HOME/.config/claude-cmux-tools/config.zsh}
+if [[ ! -r $config ]]; then
+  print -u2 "claude-router: no config at $config (copy config.example.zsh there)"
+  exit 2
+fi
+typeset -A CCT_ACCOUNTS
+typeset -a CCT_ROUTES
+source $config
+
+real=${CCT_CLAUDE_BIN:-$HOME/.local/bin/claude}
+[[ -x $real ]] || { print -u2 "claude-router: claude binary not found at $real (set CCT_CLAUDE_BIN)"; exit 2; }
+
+# Commands that are not sessions: they get the config dir but no MCP hand-over.
+subcommands=(agents attach auth auto-mode doctor gateway import install logs mcp plugin plugins
+  purge respawn rm setup-token stop kill ultrareview update upgrade)
+
+cmux_workspace_title() {
+  local cli=${CMUX_BUNDLED_CLI_PATH:-/Applications/cmux.app/Contents/Resources/bin/cmux}
+  [[ -n $CMUX_WORKSPACE_ID && -x $cli ]] || return
+  CMUX_QUIET=1 $cli --json --id-format uuids workspace list 2>/dev/null \
+    | jq -r --arg id $CMUX_WORKSPACE_ID '.workspaces[] | select(.id == $id) | .title // empty'
+}
+
+pick_account() {
+  if [[ -n $CLAUDE_ACCOUNT ]]; then
+    print -r -- $CLAUDE_ACCOUNT
+    return
+  fi
+  local route kind pattern account title remote
+  local title_loaded=false remote_loaded=false
+  for route in $CCT_ROUTES; do
+    kind=${route%%:*} pattern=${${route#*:}%|*} account=${route##*|}
+    case $kind in
+      workspace)
+        [[ $title_loaded == true ]] || { title=$(cmux_workspace_title); title_loaded=true; }
+        [[ -n $title && ${(L)title} == ${(L)~pattern} ]] && { print -r -- $account; return; } ;;
+      path)
+        [[ $PWD == $pattern || $PWD == $pattern/* ]] && { print -r -- $account; return; } ;;
+      remote)
+        [[ $remote_loaded == true ]] || { remote=$(git -C "$PWD" remote get-url origin 2>/dev/null); remote_loaded=true; }
+        [[ -n $remote && $remote == ${~pattern} ]] && { print -r -- $account; return; } ;;
+      *)
+        print -u2 "claude-router: unknown route kind '$kind' in: $route" ;;
+    esac
+  done
+  print -r -- ${CCT_DEFAULT_ACCOUNT:?set CCT_DEFAULT_ACCOUNT in $config}
+}
+
+# Claude Code keys project config by git root; a worktree counts as its main repo.
+project_key() {
+  local common=$(git -C "$PWD" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [[ -n $common ]]; then print -r -- ${common%/.git}; else print -r -- $PWD; fi
+}
+
+account=$(pick_account)
+if (( ! ${+CCT_ACCOUNTS[$account]} )); then
+  print -u2 "claude-router: account '$account' is not in CCT_ACCOUNTS"
+  exit 2
+fi
+dir=${CCT_ACCOUNTS[$account]}
+
+if [[ -n $CCT_DRY_RUN ]]; then
+  print -r -- "account=$account config_dir=${dir:-default (~/.claude)}"
+  exit 0
+fi
+
+if [[ -z $dir ]]; then
+  # Clear an inherited value so the default account really uses ~/.claude.
+  exec env -u CLAUDE_CONFIG_DIR $real "$@"
+fi
+
+export CLAUDE_CONFIG_DIR=$dir
+if [[ $CCT_SHARE_MCP == true ]] && ! (( ${subcommands[(Ie)$1]} )) && [[ -r $HOME/.claude.json ]]; then
+  # Appended last: --mcp-config is variadic and would swallow a prompt argument.
+  (umask 077; jq --arg p "$(project_key)" \
+    '{mcpServers: ((.mcpServers // {}) + (.projects[$p].mcpServers // {}))}' \
+    $HOME/.claude.json > $dir/shared-mcp.json.tmp \
+    && mv $dir/shared-mcp.json.tmp $dir/shared-mcp.json)
+  exec $real "$@" --mcp-config $dir/shared-mcp.json
+fi
+exec $real "$@"
