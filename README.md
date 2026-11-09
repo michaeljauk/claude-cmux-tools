@@ -70,6 +70,7 @@ instead of failing. A session that hangs at the start usually means a wrong key.
 ```sh
 claude-handover prompt.md --cwd ~/acme/monorepo --title "ACME-42"   # sends the prompt at once
 claude-handover prompt.md --prefill                                  # puts it on the shell line
+claude-handover prompt.md --cmd "claude-router --backend example"   # start with another command
 ```
 
 With `--prefill` the new tab shows `claude "<prompt>▌"`, with the cursor before the closing quote.

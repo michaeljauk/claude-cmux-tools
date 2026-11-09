@@ -2,7 +2,7 @@
 # claude-handover: start a fresh Claude Code session in a new cmux tab, with a prompt from a file.
 #
 # Usage: claude-handover <prompt-file> [--cwd <dir>] [--title <tab title>]
-#                        [--workspace <id>] [--no-focus] [--prefill]
+#                        [--workspace <id>] [--no-focus] [--prefill] [--cmd <command>]
 #
 # Defaults: cwd = $PWD. Inside cmux the tab opens next to the calling tab. Outside cmux (Raycast,
 # launchd, another terminal) it opens in the focused pane of the focused workspace; that needs the
@@ -11,6 +11,8 @@
 # --prefill puts  claude "<prompt>"  on the tab's shell line (command: CCT_CLAUDE_CMD, default
 # claude). You edit it and press Enter; only then claude starts. Without --prefill the prompt is
 # sent at once.
+# --cmd <command> starts the session with another command, in both modes. Example:
+# --cmd "claude-router --backend example".
 #
 # The tab runs the command from its interactive shell, so an alias claude=claude-router applies.
 #
@@ -31,11 +33,11 @@ cli=${CMUX_BUNDLED_CLI_PATH:-/Applications/cmux.app/Contents/Resources/bin/cmux}
 dir=${CCT_STATE_DIR:-$HOME/.local/state/claude-cmux-tools}
 
 usage() {
-  print -u2 "usage: claude-handover <prompt-file> [--cwd <dir>] [--title <tab title>] [--workspace <id>] [--no-focus] [--prefill]"
+  print -u2 "usage: claude-handover <prompt-file> [--cwd <dir>] [--title <tab title>] [--workspace <id>] [--no-focus] [--prefill] [--cmd <command>]"
   exit 2
 }
 
-prompt_file= cwd=$PWD title= workspace=$CMUX_WORKSPACE_ID focus=true prefill=
+prompt_file= cwd=$PWD title= workspace=$CMUX_WORKSPACE_ID focus=true prefill= cmd=
 while (( $# )); do
   case $1 in
     --cwd) (( $# >= 2 )) || usage; cwd=$2; shift 2 ;;
@@ -43,6 +45,7 @@ while (( $# )); do
     --workspace) (( $# >= 2 )) || usage; workspace=$2; shift 2 ;;
     --no-focus) focus=false; shift ;;
     --prefill) prefill=1; shift ;;
+    --cmd) (( $# >= 2 )) || usage; cmd=$2; shift 2 ;;
     -h|--help) usage ;;
     -*) print -u2 "claude-handover: unknown option $1"; usage ;;
     *) [[ -z $prompt_file ]] || usage; prompt_file=$1; shift ;;
@@ -62,6 +65,12 @@ fi
 [[ -n $workspace ]] || { print -u2 "claude-handover: no focused cmux workspace"; exit 3; }
 [[ -r $prompt_file && -s $prompt_file ]] || { print -u2 "claude-handover: prompt file missing or empty: $prompt_file"; exit 1; }
 [[ -d $cwd ]] || { print -u2 "claude-handover: no such directory: $cwd"; exit 1; }
+# --cmd goes into the launcher unquoted, so it may hold words ("claude --backend x") but no shell
+# syntax.
+if [[ -n $cmd && ( $cmd == *[^[:alnum:]_./~\ -]* || $cmd == [-\ ]* ) ]]; then
+  print -u2 "claude-handover: --cmd allows only letters, digits, spaces and _ . / ~ -: $cmd"
+  exit 2
+fi
 if [[ $(head -c 1 -- $prompt_file) == - ]]; then
   print -u2 "claude-handover: prompt starts with '-', claude would read it as an option"
   exit 1
@@ -77,7 +86,7 @@ if [[ -z $prefill ]]; then
   cat > $launcher <<EOF
 rm -f -- ${(q)launcher}
 cd -- ${(q)cwd} || return
-claude "\$(<${(q)prompt_file})"
+${cmd:-claude} "\$(<${(q)prompt_file})"
 EOF
 else
   # --prefill: the tab's shell line shows  claude "<prompt>▌"  (CCT_CLAUDE_CMD). Edit it and
@@ -88,7 +97,7 @@ else
   {
     print -r -- "rm -f -- ${(q)launcher}"
     print -r -- "cd -- ${(q)cwd} || return"
-    print -r -- "typeset -g cct_prompt_file=${(q)prompt_file} cct_cmd=${(q)${CCT_CLAUDE_CMD:-claude}}"
+    print -r -- "typeset -g cct_prompt_file=${(q)prompt_file} cct_cmd=${(q)${cmd:-${CCT_CLAUDE_CMD:-claude}}}"
     cat <<'EOF'
 cct_disarm() {
   unset cct_prompt_file
