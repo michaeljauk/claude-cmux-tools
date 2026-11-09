@@ -47,6 +47,24 @@ To force an account for one run, use `CLAUDE_ACCOUNT=work claude`.
 
 The router only picks an account. It does not switch accounts when one hits a usage limit.
 
+#### API backends
+
+`claude-router --backend <name>` runs Claude Code against an Anthropic-compatible API with an API
+key, for example a provider of open-weight models. Routes never pick a backend; only the flag
+does.
+
+1. Store the key in the Keychain:
+   `security add-generic-password -s example-api-key -a "$USER" -w`
+2. Add an entry to `CCT_BACKENDS`: config dir, base URL, key command, model, small model.
+3. Check it without starting Claude: `CCT_DRY_RUN=1 claude-router --backend example`.
+   This runs the key command and prints the key length, never the key.
+
+The provider must serve `POST <base url>/v1/messages`. Each backend has its own config dir, so its
+sessions do not mix with the accounts. That dir starts empty: link your skills into it if you want
+them there. Claude Code prints `unrecognized_model` for non-Claude models and shows a cost
+estimate that is not the provider's price. If the key is wrong, Claude Code retries silently
+instead of failing. A session that hangs at the start usually means a wrong key.
+
 ### claude-handover
 
 ```sh

@@ -29,6 +29,18 @@ CCT_ROUTES=(
 # the user-scope and project-scope servers to the other accounts on every start.
 CCT_SHARE_MCP=false
 
+# API backends: Anthropic-compatible endpoints with an API key instead of a subscription login.
+# Only `claude-router --backend <name>` uses one; routes never pick a backend.
+# Format: name -> "<config dir>|<base url>|<key command>|<model>|<small model>"
+#   config dir   own CLAUDE_CONFIG_DIR, so backend sessions do not mix with the accounts
+#   base url     the API root; claude calls <base url>/v1/messages
+#   key command  prints the API key, e.g. from the macOS Keychain. Never put the key itself here.
+#   small model  used for background and Haiku-class calls; empty = same as model
+# Store a key: security add-generic-password -s example-api-key -a "$USER" -w
+typeset -A CCT_BACKENDS=(
+  # example "$HOME/.claude-example|https://api.example.com|security find-generic-password -s example-api-key -w|model-large|model-small"
+)
+
 # Path of the real claude binary. Default: ~/.local/bin/claude (native installer).
 # CCT_CLAUDE_BIN=$HOME/.local/bin/claude
 

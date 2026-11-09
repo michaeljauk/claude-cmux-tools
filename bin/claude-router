@@ -1,7 +1,7 @@
 #!/bin/zsh
 # claude-router: pick a Claude Code account (CLAUDE_CONFIG_DIR) from where you are, then run claude.
 #
-# Usage: claude-router [claude args...]
+# Usage: claude-router [--backend <name>] [claude args...]
 #   Use it instead of `claude`: alias claude=claude-router, and in cmux set
 #   automation.claudeBinaryPath to this file.
 #
@@ -9,6 +9,9 @@
 #   1. CLAUDE_ACCOUNT=<name> in the environment
 #   2. CCT_ROUTES in the config, in order (cmux workspace title, path, git remote)
 #   3. CCT_DEFAULT_ACCOUNT
+#
+# --backend <name> skips the rules and runs claude against an Anthropic-compatible API from
+# CCT_BACKENDS (base URL, key, models). Routes never pick a backend; only the flag does.
 #
 # Config: ${CCT_CONFIG:-~/.config/claude-cmux-tools/config.zsh}, see config.example.zsh.
 # CCT_DRY_RUN=1 prints the picked account and config dir and does not start claude.
@@ -19,11 +22,21 @@ if [[ ! -r $config ]]; then
   exit 2
 fi
 typeset -A CCT_ACCOUNTS
+typeset -A CCT_BACKENDS
 typeset -a CCT_ROUTES
 source $config
 
 real=${CCT_CLAUDE_BIN:-$HOME/.local/bin/claude}
 [[ -x $real ]] || { print -u2 "claude-router: claude binary not found at $real (set CCT_CLAUDE_BIN)"; exit 2; }
+
+backend=
+if [[ $1 == --backend ]]; then
+  backend=$2
+  shift 2 2>/dev/null || { print -u2 "claude-router: --backend needs a name"; exit 2; }
+elif [[ $1 == --backend=* ]]; then
+  backend=${1#--backend=}
+  shift
+fi
 
 # Commands that are not sessions: they get the config dir but no MCP hand-over.
 subcommands=(agents attach auth auto-mode doctor gateway import install logs mcp plugin plugins
@@ -67,16 +80,46 @@ project_key() {
   if [[ -n $common ]]; then print -r -- ${common%/.git}; else print -r -- $PWD; fi
 }
 
-account=$(pick_account)
-if (( ! ${+CCT_ACCOUNTS[$account]} )); then
-  print -u2 "claude-router: account '$account' is not in CCT_ACCOUNTS"
-  exit 2
-fi
-dir=${CCT_ACCOUNTS[$account]}
+if [[ -n $backend ]]; then
+  if (( ! ${+CCT_BACKENDS[$backend]} )); then
+    print -u2 "claude-router: backend '$backend' is not in CCT_BACKENDS"
+    exit 2
+  fi
+  # "<config dir>|<base url>|<key command>|<model>|<small model>"
+  fields=("${(@s:|:)CCT_BACKENDS[$backend]}")
+  if (( $#fields != 5 )) || [[ -z ${fields[1]} || -z ${fields[2]} || -z ${fields[4]} ]]; then
+    print -u2 "claude-router: backend '$backend' needs 5 fields: dir|url|key command|model|small model"
+    exit 2
+  fi
+  dir=${fields[1]} model=${fields[4]} small=${fields[5]:-${fields[4]}}
+  key=$(eval "${fields[3]}") && [[ -n $key ]] || {
+    print -u2 "claude-router: the key command of backend '$backend' returned no key"
+    exit 2
+  }
+  if [[ -n $CCT_DRY_RUN ]]; then
+    print -r -- "backend=$backend config_dir=$dir base_url=${fields[2]} model=$model small=$small key=${#key} chars"
+    exit 0
+  fi
+  mkdir -p -m 700 $dir
+  # Clear account credentials so claude uses only the backend key.
+  unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX \
+    CLAUDE_CODE_USE_FOUNDRY
+  export ANTHROPIC_BASE_URL=${fields[2]} ANTHROPIC_AUTH_TOKEN=$key ANTHROPIC_MODEL=$model \
+    ANTHROPIC_DEFAULT_OPUS_MODEL=$model ANTHROPIC_DEFAULT_SONNET_MODEL=$model \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL=$small CLAUDE_CODE_SUBAGENT_MODEL=$model
+  unset key
+else
+  account=$(pick_account)
+  if (( ! ${+CCT_ACCOUNTS[$account]} )); then
+    print -u2 "claude-router: account '$account' is not in CCT_ACCOUNTS"
+    exit 2
+  fi
+  dir=${CCT_ACCOUNTS[$account]}
 
-if [[ -n $CCT_DRY_RUN ]]; then
-  print -r -- "account=$account config_dir=${dir:-default (~/.claude)}"
-  exit 0
+  if [[ -n $CCT_DRY_RUN ]]; then
+    print -r -- "account=$account config_dir=${dir:-default (~/.claude)}"
+    exit 0
+  fi
 fi
 
 if [[ -z $dir ]]; then
